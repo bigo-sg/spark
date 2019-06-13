@@ -9,7 +9,6 @@ import org.apache.spark.sql.hive.execution._
 case class MergeFiles(session: SparkSession) extends Rule[LogicalPlan] {
 
   override def apply(plan: LogicalPlan): LogicalPlan = {
-    logInfo("merge files rule called")
     val enableMerge = session.conf.get("spark.sql.merge.files.enabled", "false")
     if (enableMerge != "true") {
       return plan

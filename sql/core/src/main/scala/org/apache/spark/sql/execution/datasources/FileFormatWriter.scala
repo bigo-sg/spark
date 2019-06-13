@@ -24,10 +24,10 @@ import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce._
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
-
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.{FileCommitProtocol, SparkHadoopWriterUtils}
+import org.apache.spark.rdd.RDD
 import org.apache.spark.shuffle.FetchFailedException
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.InternalRow
@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
 import org.apache.spark.sql.catalyst.util.{CaseInsensitiveMap, DateTimeUtils}
-import org.apache.spark.sql.execution.{SortExec, SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.{SQLExecution, SortExec, SparkPlan}
 import org.apache.spark.util.{SerializableConfiguration, Utils}
 
 
@@ -197,6 +197,95 @@ object FileFormatWriter extends Logging {
       committer.abortJob(job)
       throw new SparkException("Job aborted.", cause)
     }
+  }
+
+  def writeRdd(
+                sparkSession: SparkSession,
+                rdd: RDD[InternalRow],
+                fileFormat: FileFormat,
+                committer: FileCommitProtocol,
+                outputSpec: OutputSpec,
+                hadoopConf: Configuration,
+                partitionColumns: Seq[Attribute],
+                bucketSpec: Option[BucketSpec],
+                statsTrackers: Seq[WriteJobStatsTracker],
+                options: Map[String, String])
+  : Set[String] = {
+    val job = Job.getInstance(hadoopConf)
+    job.setOutputKeyClass(classOf[Void])
+    job.setOutputValueClass(classOf[InternalRow])
+    FileOutputFormat.setOutputPath(job, new Path(outputSpec.outputPath))
+
+    val partitionSet = AttributeSet(partitionColumns)
+    val dataColumns = outputSpec.outputColumns.filterNot(partitionSet.contains)
+
+    val bucketIdExpression = bucketSpec.map { spec =>
+      val bucketColumns = spec.bucketColumnNames.map(c => dataColumns.find(_.name == c).get)
+      // Use `HashPartitioning.partitionIdExpression` as our bucket id expression, so that we can
+      // guarantee the data distribution is same between shuffle and bucketed data source, which
+      // enables us to only shuffle one side when join a bucketed table and a normal one.
+      HashPartitioning(bucketColumns, spec.numBuckets).partitionIdExpression
+    }
+
+    val caseInsensitiveOptions = CaseInsensitiveMap(options)
+
+    val dataSchema = dataColumns.toStructType
+    DataSourceUtils.verifyWriteSchema(fileFormat, dataSchema)
+    // Note: prepareWrite has side effect. It sets "job".
+    val outputWriterFactory =
+      fileFormat.prepareWrite(sparkSession, job, caseInsensitiveOptions, dataSchema)
+
+    val description = new WriteJobDescription(
+      uuid = UUID.randomUUID().toString,
+      serializableHadoopConf = new SerializableConfiguration(job.getConfiguration),
+      outputWriterFactory = outputWriterFactory,
+      allColumns = outputSpec.outputColumns,
+      dataColumns = dataColumns,
+      partitionColumns = partitionColumns,
+      bucketIdExpression = bucketIdExpression,
+      path = outputSpec.outputPath,
+      customPartitionLocations = outputSpec.customPartitionLocations,
+      maxRecordsPerFile = caseInsensitiveOptions.get("maxRecordsPerFile").map(_.toLong)
+        .getOrElse(sparkSession.sessionState.conf.maxRecordsPerFile),
+      timeZoneId = caseInsensitiveOptions.get(DateTimeUtils.TIMEZONE_OPTION)
+        .getOrElse(sparkSession.sessionState.conf.sessionLocalTimeZone),
+      statsTrackers = statsTrackers
+    )
+
+    // This call shouldn't be put into the `try` block below because it only initializes and
+    // prepares the job, any exception thrown from here shouldn't cause abortJob() to be called.
+    committer.setupJob(job)
+
+    val jobIdInstant = new Date().getTime
+    val ret = new Array[WriteTaskResult](rdd.partitions.length)
+    sparkSession.sparkContext.runJob(
+      rdd,
+      (taskContext: TaskContext, iter: Iterator[InternalRow]) => {
+        executeTask(
+          description = description,
+          jobIdInstant = jobIdInstant,
+          sparkStageId = taskContext.stageId(),
+          sparkPartitionId = taskContext.partitionId(),
+          sparkAttemptNumber = taskContext.taskAttemptId().toInt & Integer.MAX_VALUE,
+          committer,
+          iterator = iter)
+      },
+      rdd.partitions.indices,
+      (index, res: WriteTaskResult) => {
+        committer.onTaskCommit(res.commitMsg)
+        ret(index) = res
+      })
+
+    val commitMsgs = ret.map(_.commitMsg)
+
+    committer.commitJob(job, commitMsgs)
+    logInfo(s"Write Job ${description.uuid} committed.")
+
+    processStats(description.statsTrackers, ret.map(_.summary.stats))
+    logInfo(s"Finished processing stats for write job ${description.uuid}.")
+
+    // return a set of all the partition paths that were updated during this job
+    ret.map(_.summary.updatedPartitions).reduceOption(_ ++ _).getOrElse(Set.empty)
   }
 
   /** Writes data out in a single Spark task. */

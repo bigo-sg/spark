@@ -23,14 +23,14 @@ import java.text.SimpleDateFormat
 import java.util.{Date, Locale, Random}
 
 import scala.util.control.NonFatal
-
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.hive.common.FileUtils
 import org.apache.hadoop.hive.ql.exec.TaskRunner
-
 import org.apache.spark.internal.io.FileCommitProtocol
+import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.execution.SparkPlan
@@ -95,6 +95,57 @@ private[hive] trait SaveAsHiveFile extends DataWritingCommand {
       bucketSpec = None,
       statsTrackers = Seq(basicWriteJobStatsTracker(hadoopConf)),
       options = Map.empty)
+  }
+
+  def saveAsHiveFile2(sparkSession: SparkSession,
+                      rdd: RDD[InternalRow],
+                      hadoopConf: Configuration,
+                      fileSinkConf: FileSinkDesc,
+                      outputLocation: String,
+                      customPartitionLocations: Map[TablePartitionSpec, String] = Map.empty,
+                      partitionAttributes: Seq[Attribute] = Nil): Set[String] = {
+    val isCompressed =
+      fileSinkConf.getTableInfo.getOutputFileFormatClassName.toLowerCase(Locale.ROOT) match {
+        case formatName if formatName.endsWith("orcoutputformat") =>
+          // For ORC,"mapreduce.output.fileoutputformat.compress",
+          // "mapreduce.output.fileoutputformat.compress.codec", and
+          // "mapreduce.output.fileoutputformat.compress.type"
+          // have no impact because it uses table properties to store compression information.
+          false
+        case _ => hadoopConf.get("hive.exec.compress.output", "false").toBoolean
+      }
+
+    if (isCompressed) {
+      hadoopConf.set("mapreduce.output.fileoutputformat.compress", "true")
+      fileSinkConf.setCompressed(true)
+      fileSinkConf.setCompressCodec(hadoopConf
+        .get("mapreduce.output.fileoutputformat.compress.codec"))
+      fileSinkConf.setCompressType(hadoopConf
+        .get("mapreduce.output.fileoutputformat.compress.type"))
+    } else {
+      // Set compression by priority
+      HiveOptions.getHiveWriteCompression(fileSinkConf.getTableInfo, sparkSession.sessionState.conf)
+        .foreach { case (compression, codec) => hadoopConf.set(compression, codec) }
+    }
+
+    val committer = FileCommitProtocol.instantiate(
+      sparkSession.sessionState.conf.fileCommitProtocolClass,
+      jobId = java.util.UUID.randomUUID().toString,
+      outputPath = outputLocation)
+
+    FileFormatWriter.writeRdd(
+      sparkSession = sparkSession,
+      rdd = rdd,
+      fileFormat = new HiveFileFormat(fileSinkConf),
+      committer = committer,
+      outputSpec =
+        FileFormatWriter.OutputSpec(outputLocation, customPartitionLocations, outputColumns),
+      hadoopConf = hadoopConf,
+      partitionColumns = partitionAttributes,
+      bucketSpec = None,
+      statsTrackers = Seq(basicWriteJobStatsTracker(hadoopConf)),
+      options = Map.empty)
+
   }
 
   protected def getExternalTmpPath(

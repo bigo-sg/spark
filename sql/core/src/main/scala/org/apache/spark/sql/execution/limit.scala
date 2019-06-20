@@ -35,7 +35,16 @@ import org.apache.spark.util.Utils
 case class CollectLimitExec(limit: Int, child: SparkPlan) extends UnaryExecNode {
   override def output: Seq[Attribute] = child.output
   override def outputPartitioning: Partitioning = SinglePartition
-  override def executeCollect(): Array[InternalRow] = child.executeTake(limit)
+  override def executeCollect(): Array[InternalRow] = {
+    sqlContext.setConf("spark.sql.limit.fullscan", "false")
+    child.transform{
+      case c: FilterExec =>
+        logInfo("found filter in limit exec")
+        sqlContext.setConf("spark.sql.limit.fullscan", "true")
+        c
+    }
+    child.executeTake(limit)
+  }
   private val serializer: Serializer = new UnsafeRowSerializer(child.output.size)
   protected override def doExecute(): RDD[InternalRow] = {
     val locallyLimited = child.execute().mapPartitionsInternal(_.take(limit))

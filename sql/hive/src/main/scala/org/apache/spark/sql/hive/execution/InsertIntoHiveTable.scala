@@ -364,7 +364,7 @@ case class InsertIntoHiveTable(
       val ifc = tableDesc.getInputFileFormatClass.asInstanceOf[java.lang.Class[InputFormat[Writable, Writable]]]
       val rdds = rule.plist.map { case (path, repartnum) =>
         logInfo(s"[makeMergedRDDForPartitionedTable] create rdd for $path repartition $repartnum")
-        makeMergedRddForPartition(new Path(path), dynamicPartKey, ifc).map(row => row.copy()).repartition(repartnum)
+        makeMergedRddForPartition(new Path(path), dynamicPartKey, ifc).map(row => row.copy()).coalesce(repartnum)
       }.toList
       unionRdds(rdds)
     }
@@ -385,7 +385,7 @@ case class InsertIntoHiveTable(
         HadoopTableReader.fillObject(iter, deserializer, attrsWithIndex, mutableRow, deserializer)
       }
 
-      deserializedHadoopRDD.map(row => row.copy()).repartition(rePartitionNum)
+      deserializedHadoopRDD.map(row => row.copy()).coalesce(rePartitionNum)
     }
 
 

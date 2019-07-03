@@ -143,6 +143,8 @@ object TypeCoercion {
     case (n: DecimalType, s: StringType) => Some(DoubleType)
     case (s: StringType, n: DecimalType) => Some(DoubleType)
 
+    case (l:StringType, r:IntegerType) => Some(LongType)
+    case (l:IntegerType, r:StringType) => Some(LongType)
     case (l: StringType, r: AtomicType) if r != StringType => Some(r)
     case (l: AtomicType, r: StringType) if l != StringType => Some(l)
     case (l, r) => None

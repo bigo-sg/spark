@@ -208,7 +208,7 @@ private[hive] object SparkSQLCLIDriverToOozie extends Logging {
           throw e
       }
       if (retcli != 0) {
-        System.exit(1)
+        System.exit(retcli)
       }
       System.out.println("finish sparksql run")
       return retcli

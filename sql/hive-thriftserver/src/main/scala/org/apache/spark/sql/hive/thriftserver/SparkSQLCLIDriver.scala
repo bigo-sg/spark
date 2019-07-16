@@ -45,6 +45,13 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.hive.HiveUtils
 import org.apache.spark.util.ShutdownHookManager
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.scala.experimental.ScalaObjectMapper
+import com.fasterxml.jackson.module.scala.DefaultScalaModule
+import scala.collection.mutable.LinkedHashMap
+import java.sql.Timestamp
+import org.apache.spark.util.Utils
+import java.time.format.DateTimeFormatter
 
 /**
  * This code doesn't support remote connections in Hive 1.2+, as the underlying CliDriver
@@ -361,6 +368,14 @@ private[hive] class SparkSQLCLIDriver extends CliDriver with Logging {
           proc.isInstanceOf[ResetProcessor] ) {
           val driver = new SparkSQLDriver
 
+          val sparkconf = SparkSQLEnv.sparkContext.conf
+          val enableAudit = sparkconf.get("spark.sql.audit.enable", "false").toBoolean
+          val mapper = new ObjectMapper() with ScalaObjectMapper
+          mapper.registerModule(DefaultScalaModule)
+          val statement = cmd.replace("\n", " ").replace("\"", "'").replace("\t", " ").replace("\r", " ")
+          val map = new LinkedHashMap[String, String]
+          val user = Utils.getCurrentUserName
+
           driver.init()
           val out = sessionState.out
           val err = sessionState.err
@@ -373,6 +388,29 @@ private[hive] class SparkSQLCLIDriver extends CliDriver with Logging {
           val timeTaken: Double = (end - start) / 1000.0
 
           ret = rc.getResponseCode
+
+          val state = if (ret == 0) "FINISHED" else "FAILED"
+          val dt_begin = new Timestamp(start).toLocalDateTime()
+          val dt_end = new Timestamp(end).toLocalDateTime
+          val dur = java.time.Duration.between(dt_begin, dt_end).getSeconds
+          map += ("job_state" -> state.toString)
+          map += ("user_name" -> user)
+          map += ("start_time" -> dt_begin.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
+          map += ("end_time" -> dt_end.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME))
+          map += ("query" -> statement)
+          map += ("duration" -> dur.toString)
+          val msg = mapper.writeValueAsString(map)
+          val msgKey = (Math.random() * 100.toInt).toString
+          if (enableAudit) {
+            val brokers = sparkconf.get(
+              "spark.sql.audit.brokers",
+              "103.211.228.225:9002,103.211.228.226:9092,103.211.228.227:9092")
+            val topic = sparkconf.get("spark.sql.audit.topic", "spark_audit")
+            val sinker = new KafkaSinker(brokers, topic)
+            sinker.send(msgKey, msg)
+            logInfo("spark sql audit log\n" + msg)
+          }
+
           if (ret != 0) {
             // For analysis exception, only the error is printed out to the console.
             rc.getException() match {
@@ -436,3 +474,28 @@ private[hive] class SparkSQLCLIDriver extends CliDriver with Logging {
   }
 }
 
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import java.util.Properties
+
+private[hive] class KafkaSinker(brokerlist: String, topic: String) extends Logging {
+  var producer: KafkaProducer[String, String] = {
+    val properties = new Properties
+    properties.put("bootstrap.servers", brokerlist)
+    properties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer")
+    properties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer")
+    new KafkaProducer(properties);
+  }
+
+  def send(key: String, msg: String) {
+    val producerRecord = new ProducerRecord[String, String](topic, key, msg)
+    producer.send(producerRecord)
+    new Thread(new Runnable {
+      override def run(): Unit = {
+        producer.flush
+        logInfo("upload audit log finished")
+      }
+    }).start()
+  }
+
+}

@@ -85,7 +85,7 @@ case class InsertIntoHiveTable(
                                 outputColumnNames: Seq[String]) extends SaveAsHiveFile {
 
 
-  var avgConditionSize = 64000000
+  var avgConditionSize = 128000000
   var avgOutputSize = 256000000
   var mergeEnabled = false
 

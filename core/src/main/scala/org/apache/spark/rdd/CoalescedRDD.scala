@@ -90,6 +90,7 @@ private[spark] class CoalescedRDD[T: ClassTag](
 
     pc.coalesce(maxPartitions, prev).zipWithIndex.map {
       case (pg, i) =>
+        logInfo("partition group size is " + pg.numPartitions)
         val ids = pg.partitions.map(_.index).toArray
         new CoalescedRDDPartition(i, prev, ids, pg.prefLoc)
     }

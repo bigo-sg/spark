@@ -88,6 +88,7 @@ case class InsertIntoHiveTable(
   var avgConditionSize = 128000000
   var avgOutputSize = 256000000
   var mergeEnabled = false
+  var orcmergeEnabled=false
 
   /**
     * Inserts all the rows in the table into Hive.  Row objects are properly serialized with the
@@ -100,6 +101,7 @@ case class InsertIntoHiveTable(
     mergeEnabled = sparkSession.conf.get("spark.sql.merge.output.enabled", "false").toBoolean
     avgConditionSize = sparkSession.conf.get("spark.sql.merge.output.avgcond", "64000000").toInt
     avgOutputSize = sparkSession.conf.get("spark.sql.merge.output.avgoutput", "256000000").toInt
+    orcmergeEnabled =sparkSession.conf.get("spark.sql.fastmerge.orc.enabled","false").toBoolean
 
     val hiveQlTable = HiveClientImpl.toHiveTable(table)
     // Have to pass the TableDesc object to RDD.mapPartitions and then instantiate new serializer
@@ -475,19 +477,29 @@ case class InsertIntoHiveTable(
         logInfo("[mergeFile] numDynamicPartitions -> " + numDynamicPartitions)
         val mergeRule = generateDynamicMergeRule(path, hadoopConf, directRenamePathList)
         logInfo(s"[mergeFile] merge candidate " + mergeRule.plist.size)
-        if (mergeRule.plist.size != 0) {
-          val rdd = makeMergedRDDForPartitionedTable(mergeRule, partitionAttributes)
-          saveAsHiveFile2(sparkSession = sparkSession, rdd = rdd, hadoopConf = hadoopConf, fileSinkConf = fileSinkConf,
-            outputLocation = fileSinkConf.dir, partitionAttributes = partitionAttributes)
+        if (mergeRule.plist.nonEmpty) {
+          if(fileSinkConf.tableInfo.getOutputFileFormatClassName.toLowerCase.endsWith("orcoutputformat") && orcmergeEnabled){
+            logInfo("fast merge orc dynamic part")
+            OrcMergeUtil.mergeDynamicPartOrc(mergeRule.plist,broadcastedHadoopConf,sparkSession)
+          }else {
+            val rdd = makeMergedRDDForPartitionedTable(mergeRule, partitionAttributes)
+            saveAsHiveFile2(sparkSession = sparkSession, rdd = rdd, hadoopConf = hadoopConf, fileSinkConf = fileSinkConf,
+              outputLocation = fileSinkConf.dir, partitionAttributes = partitionAttributes)
+          }
+          logInfo("[mergeFile] merge dynamic partition finished")
         }
-        logInfo("[mergeFile] merge dynamic partition finished")
       } else {
         val reParitionNum = getRePartitionNum(path, hadoopConf)
         logInfo(s"[mergeFile] static $path rePartionNum is: " + reParitionNum)
         if (reParitionNum > 0) {
-          val rdd = makeMergedRDDForTable(path, reParitionNum)
-          saveAsHiveFile2(sparkSession = sparkSession, rdd = rdd, hadoopConf = hadoopConf, fileSinkConf = fileSinkConf,
-            outputLocation = fileSinkConf.dir, partitionAttributes = partitionAttributes)
+          if(fileSinkConf.tableInfo.getOutputFileFormatClassName.toLowerCase.endsWith("orcoutputformat") && orcmergeEnabled){
+            logInfo("fast merge orc static part")
+            OrcMergeUtil.mergeStaticPartOrc(path,reParitionNum,broadcastedHadoopConf,sparkSession)
+          }else {
+            val rdd = makeMergedRDDForTable(path, reParitionNum)
+            saveAsHiveFile2(sparkSession = sparkSession, rdd = rdd, hadoopConf = hadoopConf, fileSinkConf = fileSinkConf,
+              outputLocation = fileSinkConf.dir, partitionAttributes = partitionAttributes)
+          }
           logInfo("[mergeFile] merge static partition finished")
         } else {
           logInfo(s"direct rename $path")
@@ -497,7 +509,7 @@ case class InsertIntoHiveTable(
 
     }
 
-    if (mergeEnabled && avgOutputSize > 0) {
+    if (mergeEnabled && avgOutputSize > avgConditionSize) {
       logInfo("enable merge files for " + tmpLocation)
       val directRenamePathList = new ListBuffer[String]
       val rollbackPathList = new ListBuffer[String]
@@ -516,7 +528,7 @@ case class InsertIntoHiveTable(
               val destPath = path.replace("ext-10000", "ext-10000-merge")
               fs.rename(new Path(path), new Path(destPath))
               rollbackPathList += destPath
-              logInfo("rename [" + path + " to " + destPath + "]")
+              logInfo("direct rename [" + path + " to " + destPath + "]")
           }
         }
         tmpLocation2 = tmpMergeLocation
@@ -531,7 +543,6 @@ case class InsertIntoHiveTable(
           }
       }
     }
-
 
     if (partition.nonEmpty) {
       if (numDynamicPartitions > 0) {

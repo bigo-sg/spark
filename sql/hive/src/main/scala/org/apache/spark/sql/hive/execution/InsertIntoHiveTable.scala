@@ -571,7 +571,7 @@ case class InsertIntoHiveTable(
           // Newer Hive largely improves insert overwrite performance. As Spark uses older Hive
           // version and we may not want to catch up new Hive version every time. We delete the
           // Hive partition first and then load data file into the Hive partition.
-          if (oldPart.nonEmpty && overwrite) {
+/*          if (oldPart.nonEmpty && overwrite) {
             oldPart.get.storage.locationUri.foreach { uri =>
               val partitionPath = new Path(uri)
               val fs = partitionPath.getFileSystem(hadoopConf)
@@ -584,7 +584,7 @@ case class InsertIntoHiveTable(
                 doHiveOverwrite = false
               }
             }
-          }
+          }*/
 
           // inheritTableSpecs is set to true. It should be set to false for an IMPORT query
           // which is currently considered as a Hive native command.

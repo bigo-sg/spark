@@ -39,7 +39,7 @@ case class CollectLimitExec(limit: Int, child: SparkPlan) extends UnaryExecNode 
     sqlContext.setConf("spark.sql.limit.fullscan", "false")
     child.transform{
       case c: FilterExec =>
-        logInfo("found filter in limit exec")
+        logInfo("found filter in limit exec and collect " + limit)
         sqlContext.setConf("spark.sql.limit.fullscan", "true")
         c
     }

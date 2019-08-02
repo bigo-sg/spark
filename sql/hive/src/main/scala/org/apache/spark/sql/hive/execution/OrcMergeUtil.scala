@@ -27,6 +27,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.UnionRDD
 import org.apache.spark.util.SerializableConfiguration
+import scala.util.control.Breaks._
 
 object OrcMergeUtil extends Logging{
 
@@ -115,52 +116,58 @@ object OrcMergeUtil extends Logging{
       if ((stripeStatistics == null || stripeStatistics.isEmpty()) && reader.getNumberOfRows() > 0) {
         throw new IOException("stripe stat missing " + path)
       }
+      breakable {
+        if (reader.getNumberOfRows == 0) {
+          println("found empty orc files " + path)
+          break
+        }
 
-      val ssinfo = strinfos.zip(stripeStatistics)
-      val keyWrapper = new OrcFileKeyWrapper
-      keyWrapper.setInputPath(path)
-      keyWrapper.setCompression(reader.getCompression)
-      keyWrapper.setCompressBufferSize(reader.getCompressionSize);
-      keyWrapper.setVersion(reader.getFileVersion);
-      keyWrapper.setRowIndexStride(reader.getRowIndexStride);
-      keyWrapper.setTypes(reader.getTypes);
-      val usermeta = reader.asInstanceOf[ReaderImpl].getOrcProtoUserMetadata
-      if (usermeta != null) {
-        logInfo("usermeta found in " + path)
-        usermetaList ++= usermeta
+        val ssinfo = strinfos.zip(stripeStatistics)
+        val keyWrapper = new OrcFileKeyWrapper
+        keyWrapper.setInputPath(path)
+        keyWrapper.setCompression(reader.getCompression)
+        keyWrapper.setCompressBufferSize(reader.getCompressionSize);
+        keyWrapper.setVersion(reader.getFileVersion);
+        keyWrapper.setRowIndexStride(reader.getRowIndexStride);
+        keyWrapper.setTypes(reader.getTypes);
+        val usermeta = reader.asInstanceOf[ReaderImpl].getOrcProtoUserMetadata
+        if (usermeta != null) {
+          logInfo("usermeta found in " + path)
+          usermetaList ++= usermeta
+        }
+
+        if (writer == null) {
+          outfile = new Path(path.getParent.toString.replace("ext-10000", "ext-10000-merge"), "merge" + index + ".orc")
+          logInfo("outfile created " + outfile)
+          compression = keyWrapper.getCompression();
+          compressBuffSize = keyWrapper.getCompressBufferSize();
+          version = keyWrapper.getVersion();
+          columnCount = keyWrapper.getTypes().get(0).getSubtypesCount();
+          rowIndexStride = keyWrapper.getRowIndexStride();
+
+          // block size and stripe size will be from config
+          writer = OrcFile.createWriter(
+            outfile,
+            OrcFile.writerOptions(conf)
+              .compress(compression)
+              .version(version)
+              .rowIndexStride(rowIndexStride).bufferSize(compressBuffSize.toInt)
+              .inspector(reader.getObjectInspector()));
+        }
+
+        if (!checkCompatibility(keyWrapper)) {
+          throw new IOException("check compatibility fail " + path)
+        }
+
+        ssinfo.foreach {
+          case (si, ss) =>
+            val v = new OrcFileValueWrapper
+            v.setStripeInformation(si)
+            v.setStripeStatistics(ss)
+            mergeStripe(keyWrapper, v)
+        }
+        logInfo("merge finished one file " + path)
       }
-
-      if (writer == null) {
-        outfile = new Path(path.getParent.toString.replace("ext-10000","ext-10000-merge"),"merge"+index+".orc")
-        logInfo("outfile created " + outfile)
-        compression = keyWrapper.getCompression();
-        compressBuffSize = keyWrapper.getCompressBufferSize();
-        version = keyWrapper.getVersion();
-        columnCount = keyWrapper.getTypes().get(0).getSubtypesCount();
-        rowIndexStride = keyWrapper.getRowIndexStride();
-
-        // block size and stripe size will be from config
-        writer = OrcFile.createWriter(
-          outfile,
-          OrcFile.writerOptions(conf)
-            .compress(compression)
-            .version(version)
-            .rowIndexStride(rowIndexStride).bufferSize(compressBuffSize.toInt)
-            .inspector(reader.getObjectInspector()));
-      }
-
-      if (!checkCompatibility(keyWrapper)) {
-        throw new IOException("check compatibility fail " + path)
-      }
-
-      ssinfo.foreach {
-        case (si, ss) =>
-          val v = new OrcFileValueWrapper
-          v.setStripeInformation(si)
-          v.setStripeStatistics(ss)
-          mergeStripe(keyWrapper, v)
-      }
-      logInfo("merge finished one file " + path)
     }
     writer.appendUserMetadata(usermetaList)
     writer.close

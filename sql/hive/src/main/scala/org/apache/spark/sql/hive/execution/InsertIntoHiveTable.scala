@@ -85,8 +85,8 @@ case class InsertIntoHiveTable(
                                 outputColumnNames: Seq[String]) extends SaveAsHiveFile {
 
 
-  var avgConditionSize = 128000000
-  var avgOutputSize = 256000000
+  var avgConditionSize = 0l
+  var avgOutputSize = 0l
   var mergeEnabled = false
   var orcmergeEnabled=false
 
@@ -99,7 +99,7 @@ case class InsertIntoHiveTable(
     val externalCatalog = sparkSession.sharedState.externalCatalog
     val hadoopConf = sparkSession.sessionState.newHadoopConf()
     mergeEnabled = sparkSession.conf.get("spark.sql.merge.output.enabled", "false").toBoolean
-    avgConditionSize = sparkSession.conf.get("spark.sql.merge.output.avgcond", "64000000").toInt
+    avgConditionSize = sparkSession.conf.get("spark.sql.merge.output.avgcond", "128000000").toInt
     avgOutputSize = sparkSession.conf.get("spark.sql.merge.output.avgoutput", "256000000").toInt
     orcmergeEnabled =sparkSession.conf.get("spark.sql.fastmerge.orc.enabled","false").toBoolean
 

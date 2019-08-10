@@ -340,11 +340,27 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
 
     val buf = new ArrayBuffer[InternalRow]
     val totalParts = childRDD.partitions.length
+
+    val maxReturn = totalParts*n
+    logInfo(s"total part $totalParts " +"limit max return rows " + maxReturn)
+
     var partsScanned = 0
     while (buf.size < n && partsScanned < totalParts) {
       // The number of partitions to try in this iteration. It is ok for this number to be
       // greater than totalParts because we actually cap it at totalParts in runJob.
-      var numPartsToTry = if(sqlContext.getConf("spark.sql.limit.fullscan","false") == "true") totalParts else 1L
+      var numPartsToTry = if(sqlContext.getConf("spark.sql.user.limit","false") == "true")
+      {
+        logInfo("found kyuubi user limit")
+        if(sqlContext.getConf("spark.sql.filter.limit","false") == "false"){
+          1L
+        }else{
+          if(maxReturn>=1000000) 1L else totalParts
+        }
+      } else if(sqlContext.getConf("spark.sql.user.kyuubi","false")=="true") {
+        totalParts
+      } else{
+        if(sqlContext.getConf("spark.sql.filter.limit","false") == "false") 1L else totalParts
+      }
       if (partsScanned > 0) {
         // If we didn't find any rows after the previous iteration, quadruple and retry.
         // Otherwise, interpolate the number of partitions we need to try, but overestimate

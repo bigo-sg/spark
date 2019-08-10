@@ -36,11 +36,11 @@ case class CollectLimitExec(limit: Int, child: SparkPlan) extends UnaryExecNode 
   override def output: Seq[Attribute] = child.output
   override def outputPartitioning: Partitioning = SinglePartition
   override def executeCollect(): Array[InternalRow] = {
-    sqlContext.setConf("spark.sql.limit.fullscan", "false")
+    sqlContext.setConf("spark.sql.filter.limit", "false")
     child.transform{
       case c: FilterExec =>
         logInfo("found filter in limit exec and collect " + limit)
-        sqlContext.setConf("spark.sql.limit.fullscan", "true")
+        sqlContext.setConf("spark.sql.filter.limit", "true")
         c
     }
     child.executeTake(limit)

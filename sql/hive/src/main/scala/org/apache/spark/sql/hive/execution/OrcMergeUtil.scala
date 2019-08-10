@@ -107,7 +107,12 @@ object OrcMergeUtil extends Logging{
     for (p <- paths) {
       logInfo("begin merge one file " + p)
       val path = new Path(p)
-      reader = OrcFile.createReader(path, OrcFile.readerOptions(conf).filesystem(fs))
+      try {
+        reader = OrcFile.createReader(path, OrcFile.readerOptions(conf).filesystem(fs))
+      }catch {
+        case e:Exception =>
+          throw new IOException(s"read file meta $p fail",e)
+      }
       val strinfos = reader.getStripes().iterator.toList
       //val stripeStatistics = reader.asInstanceOf[ReaderImpl].getOrcProtoStripeStatistics
       val method = classOf[ReaderImpl].getDeclaredMethod("getOrcProtoStripeStatistics")

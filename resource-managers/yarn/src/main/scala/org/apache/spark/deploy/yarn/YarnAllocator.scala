@@ -209,6 +209,10 @@ private[yarn] class YarnAllocator(
       nodeBlacklist: Set[String]): Boolean = synchronized {
     this.numLocalityAwareTasks = localityAwareTasks
     this.hostToLocalTaskCounts = hostToLocalTaskCount
+    
+    logInfo("local aware tasks " + localityAwareTasks)
+    val num_host = hostToLocalTaskCount.size
+    logInfo(s"host2localtask $num_host\n" + hostToLocalTaskCount.map(_.productIterator.mkString(":")).mkString(","))
 
     if (requestedTotal != targetNumExecutors) {
       logInfo(s"Driver requested a total number of $requestedTotal executor(s).")
@@ -320,10 +324,18 @@ private[yarn] class YarnAllocator(
         potentialContainers, numLocalityAwareTasks, hostToLocalTaskCounts,
           allocatedHostToContainersMap, localRequests)
 
+      var seed=41L+ (Math.random()*100).toInt
       val newLocalityRequests = new mutable.ArrayBuffer[ContainerRequest]
       containerLocalityPreferences.foreach {
         case ContainerLocalityPreferences(nodes, racks) if nodes != null =>
-          newLocalityRequests += createContainerRequest(resource, nodes, racks)
+          var new_nodes: Array[String] = nodes
+          if (nodes.length > 100) {
+            scala.util.Random.setSeed(seed)
+            seed+=1
+            new_nodes = scala.util.Random.shuffle(nodes.toList).take(100).toArray
+            logInfo("truncate 100 nodes for one container request")
+          }
+          newLocalityRequests += createContainerRequest(resource, new_nodes, racks)
         case _ =>
       }
 

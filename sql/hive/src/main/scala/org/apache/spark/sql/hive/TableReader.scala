@@ -68,6 +68,7 @@ class HadoopTableReader(
     @transient private val sparkSession: SparkSession,
     hadoopConf: Configuration)
   extends TableReader with CastSupport with Logging {
+  private val minsize = hadoopConf.get("mapreduce.input.fileinputformat.split.minsize","-1")
 
   // Hadoop honors "mapreduce.job.maps" as hint,
   // but will ignore when mapreduce.jobtracker.address is "local".
@@ -299,9 +300,16 @@ class HadoopTableReader(
 
     val initializeJobConfFunc = HadoopTableReader.initializeLocalJobConfFunc(path, tableDesc) _
 
+    val aa =new Configuration(hadoopConf)
+    if(minsize != "-1"){
+      logInfo("pass minsize " + minsize)
+      aa.set("mapreduce.input.fileinputformat.split.minsize",minsize)
+    }
+    val baa= sparkSession.sparkContext.broadcast(new SerializableConfiguration(aa))
+
     val rdd = new HadoopRDD(
       sparkSession.sparkContext,
-      _broadcastedHadoopConf.asInstanceOf[Broadcast[SerializableConfiguration]],
+      baa.asInstanceOf[Broadcast[SerializableConfiguration]],
       Some(initializeJobConfFunc),
       inputFormatClass,
       classOf[Writable],

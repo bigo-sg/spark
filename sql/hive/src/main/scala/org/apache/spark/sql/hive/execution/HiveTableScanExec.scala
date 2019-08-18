@@ -99,6 +99,11 @@ case class HiveTableScanExec(
     val c = sparkSession.sessionState.newHadoopConf()
     // append columns ids and names before broadcast
     addColumnMetadataToConf(c)
+    val minsize = sparkSession.conf.get("mapreduce.input.fileinputformat.split.minsize","-1")
+    if(minsize != "-1"){
+      logInfo("use minsize " + minsize)
+      c.set("mapreduce.input.fileinputformat.split.minsize",minsize)
+    }
     c
   }
 

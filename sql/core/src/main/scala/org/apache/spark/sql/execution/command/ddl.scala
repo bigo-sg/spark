@@ -217,7 +217,7 @@ case class DropTableCommand(
     } else if (ifExists) {
       // no-op
     } else {
-      throw new AnalysisException(s"Table or view not found: ${tableName.identifier}")
+      logWarning(s"Table or view not found: ${tableName.identifier}")
     }
     Seq.empty[Row]
   }

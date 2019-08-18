@@ -164,9 +164,15 @@ class HadoopRDD[K, V](
         conf.asInstanceOf[JobConf]
       } else {
         Option(HadoopRDD.getCachedMetadata(jobConfCacheKey))
-          .map { conf =>
-            logDebug("Re-using cached JobConf")
-            conf.asInstanceOf[JobConf]
+          .map { cconf =>
+            logInfo("Re-using cached JobConf")
+            val minsize =conf.get("mapreduce.input.fileinputformat.split.minsize","-1")
+            val modifiedconf=cconf.asInstanceOf[JobConf]
+            if( minsize != "-1") {
+              modifiedconf.set("mapreduce.input.fileinputformat.split.minsize", minsize)
+              logInfo("set mapreduce.input.fileinputformat.split.minsize " + minsize)
+            }
+            modifiedconf
           }
           .getOrElse {
             // Create a JobConf that will be cached and used across this RDD's getJobConf() calls in
@@ -175,7 +181,7 @@ class HadoopRDD[K, V](
             // objects. Synchronize to prevent ConcurrentModificationException (SPARK-1097,
             // HADOOP-10456).
             HadoopRDD.CONFIGURATION_INSTANTIATION_LOCK.synchronized {
-              logDebug("Creating new JobConf and caching it for later re-use")
+              logInfo("Creating new JobConf and caching it for later re-use")
               val newJobConf = new JobConf(conf)
               initLocalJobConfFuncOpt.foreach(f => f(newJobConf))
               HadoopRDD.putCachedMetadata(jobConfCacheKey, newJobConf)

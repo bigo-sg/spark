@@ -357,6 +357,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
           if(maxReturn>=1000000) 1L else totalParts
         }
       } else if(sqlContext.getConf("spark.sql.user.kyuubi","false")=="true") {
+        logInfo("found kyuubi user without limit ")
         totalParts
       } else{
         if(sqlContext.getConf("spark.sql.filter.limit","false") == "false") 1L else totalParts

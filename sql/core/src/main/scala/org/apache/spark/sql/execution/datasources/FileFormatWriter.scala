@@ -369,8 +369,8 @@ object FileFormatWriter extends Logging {
       statsTrackers.map(_ => Seq.empty)
     }
 
-    /*statsTrackers.zip(statsPerTracker).foreach {
+    statsTrackers.zip(statsPerTracker).foreach {
       case (statsTracker, stats) => statsTracker.processStats(stats)
-    }*/
+    }
   }
 }

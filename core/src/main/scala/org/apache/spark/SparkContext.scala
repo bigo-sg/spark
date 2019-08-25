@@ -1982,7 +1982,9 @@ class SparkContext(config: SparkConf) extends Logging {
     // `SparkContext` is stopped.
     localProperties.remove()
     // Unset YARN mode system env variable, to allow switching between cluster types.
-    SparkContext.clearActiveContext()
+    if(_conf.get("spark.sql.user.kyuubi","false")=="false") {
+      SparkContext.clearActiveContext()
+    }
     logInfo("Successfully stopped SparkContext")
   }
 

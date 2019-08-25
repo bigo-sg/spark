@@ -81,7 +81,7 @@ object OrcMergeUtil extends Logging{
     while (iter.hasNext()) {
       filesStatus += iter.next
     }
-    filesStatus.map { f =>
+    filesStatus.filter(p => !p.getPath.getName.startsWith("_")).map { f =>
       val path = f.getPath.toString
       var hosts = Seq[String]()
       if (f.getBlockLocations.size > 0) {

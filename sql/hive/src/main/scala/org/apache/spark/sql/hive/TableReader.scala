@@ -87,7 +87,8 @@ class HadoopTableReader(
     sparkSession.sparkContext.conf, hadoopConf)
 
   private val _broadcastedHadoopConf =
-    sparkSession.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
+    sparkSession.sparkContext.broadcast(new SerializableConfiguration(
+      {hadoopConf.set("mapreduce.input.fileinputformat.split.minsize",minsize); hadoopConf}))
 
   override def conf: SQLConf = sparkSession.sessionState.conf
 
@@ -300,16 +301,9 @@ class HadoopTableReader(
 
     val initializeJobConfFunc = HadoopTableReader.initializeLocalJobConfFunc(path, tableDesc) _
 
-    val aa =new Configuration(hadoopConf)
-    if(minsize != "-1"){
-      logInfo("pass minsize " + minsize)
-      aa.set("mapreduce.input.fileinputformat.split.minsize",minsize)
-    }
-    val baa= sparkSession.sparkContext.broadcast(new SerializableConfiguration(aa))
-
     val rdd = new HadoopRDD(
       sparkSession.sparkContext,
-      baa.asInstanceOf[Broadcast[SerializableConfiguration]],
+      _broadcastedHadoopConf.asInstanceOf[Broadcast[SerializableConfiguration]],
       Some(initializeJobConfFunc),
       inputFormatClass,
       classOf[Writable],

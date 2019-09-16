@@ -27,6 +27,8 @@ import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.catalyst.util.{GenericArrayData, StringUtils}
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
+import org.jcodings.specific.UTF8Encoding
+import org.joni.{Regex, Option, Matcher}
 
 
 abstract class StringRegexExpression extends BinaryExpression
@@ -63,6 +65,94 @@ abstract class StringRegexExpression extends BinaryExpression
   }
 
   override def sql: String = s"${left.sql} ${prettyName.toUpperCase(Locale.ROOT)} ${right.sql}"
+}
+
+abstract class StringRegexExpression2 extends BinaryExpression
+  with ImplicitCastInputTypes with NullIntolerant {
+  def escape(v: String): String
+  def matches(regex: Regex, input: Array[Byte]): Boolean
+
+  override def dataType: DataType = BooleanType
+  override def inputTypes: Seq[DataType] = Seq(StringType, StringType)
+
+  private lazy val cache: Regex = right match {
+    case x @ Literal(pattern: Array[Byte], BinaryType) => compile(pattern)
+    case _ => null
+  }
+
+  protected def compile(pattern: Array[Byte]): Regex = if (pattern == null) {
+    null
+  } else {
+    val escapedPattern = pattern
+    new Regex(escapedPattern, 0, escapedPattern.length, Option.NONE, UTF8Encoding.INSTANCE)
+  }
+
+  protected def pattern(pattern: Array[Byte]) = if (cache == null) compile(pattern) else cache
+
+  protected override def nullSafeEval(input1: Any, input2: Any): Any = {
+    val regex = pattern(input2.asInstanceOf[UTF8String].getBytes)
+    if(regex == null) {
+      null
+    } else {
+      matches(regex, input1.asInstanceOf[UTF8String].getBytes)
+    }
+  }
+
+  override def sql: String = s"${left.sql} ${prettyName.toUpperCase(Locale.ROOT)} ${right.sql}"
+}
+
+case class Like(left: Expression, right: Expression) extends StringRegexExpression2 {
+  override def escape(v: String): String = StringUtils.escapeLikeRegex2(v)
+  override def matches(regex: Regex, input: Array[Byte]): Boolean =
+    regex.matcher(input).`match`(0, input.length, Option.DEFAULT) > -1
+  override def toString: String = s"$left LIKE $right"
+
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val regexClass = classOf[Regex].getName
+    val optionClass = classOf[Option].getName
+    val encodingClass = classOf[UTF8Encoding].getName
+    val patternClass = classOf[Pattern].getName
+    val escapeFunc = StringUtils.getClass.getName.stripSuffix("$") + ".escapeLikeRegex2"
+
+    if (right.foldable) {
+      val rVal = right.eval()
+      if (rVal != null) {
+        val tmp = StringEscapeUtils.escapeJava(escape(rVal.asInstanceOf[UTF8String].toString()))
+        val regex =ctx.addMutableState(regexClass, "regex",
+          r=> s"""
+            byte[] pattern = UTF8String.fromString("${tmp}").getBytes();
+            $r = new ${regexClass}(pattern, 0, pattern.length, ${optionClass}.NONE,
+              ${encodingClass}.INSTANCE);
+          """.stripMargin)
+        val eval = left.genCode(ctx)
+        ev.copy(code = code"""
+          ${eval.code}
+          boolean ${ev.isNull} = ${eval.isNull};
+          ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+          if (!${ev.isNull}) {
+            byte[] input = ${eval.value}.getBytes();
+            ${ev.value} = $regex.matcher(input).match(0, input.length, ${optionClass}.DEFAULT) > -1;
+          }
+        """)
+      } else{
+        ev.copy(code = code"""
+          boolean ${ev.isNull} = true;
+          ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+        """)
+      }
+    }else{
+/*      val pattern = ctx.freshName("pattern")
+      val rightStr = ctx.freshName("rightStr")
+      nullSafeCodeGen(ctx, ev, (eval1, eval2) => {
+        s"""
+          String $rightStr = $eval2.toString();
+          $patternClass $pattern = $patternClass.compile($escapeFunc($rightStr));
+          ${ev.value} = $pattern.matcher($eval1.toString()).matches();
+        """
+      })*/
+      throw new Exception("right is not foldable for like " + right.toString)
+    }
+  }
 }
 
 
@@ -102,7 +192,7 @@ abstract class StringRegexExpression extends BinaryExpression
   note = """
     Use RLIKE to match with standard regular expressions.
   """)
-case class Like(left: Expression, right: Expression) extends StringRegexExpression {
+case class JLike(left: Expression, right: Expression) extends StringRegexExpression {
 
   override def escape(v: String): String = StringUtils.escapeLikeRegex(v)
 
@@ -152,6 +242,64 @@ case class Like(left: Expression, right: Expression) extends StringRegexExpressi
   }
 }
 
+
+case class RLike (left: Expression, right: Expression) extends StringRegexExpression2 {
+  override def escape(v: String): String = v
+  override def matches(regex: Regex, input: Array[Byte]): Boolean =
+    regex.matcher(input).search(0, input.length, Option.DEFAULT) > -1
+  override def toString: String = s"$left RLIKE $right"
+
+  override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val regexClass = classOf[Regex].getName
+    val optionClass = classOf[Option].getName
+    val encodingClass = classOf[UTF8Encoding].getName
+
+    if (right.foldable) {
+      val rVal = right.eval()
+      if (rVal != null) {
+        val tmp = StringEscapeUtils.escapeJava(rVal.asInstanceOf[UTF8String].toString())
+        val regex =ctx.addMutableState(regexClass, "regex",
+          r=> s"""
+            byte[] pattern = UTF8String.fromString("${tmp}").getBytes();
+            $r = new ${regexClass}(pattern, 0, pattern.length, ${optionClass}.NONE,
+              ${encodingClass}.INSTANCE);
+          """.stripMargin)
+
+        val eval = left.genCode(ctx)
+        ev.copy(code = code"""
+          ${eval.code}
+          boolean ${ev.isNull} = ${eval.isNull};
+          ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+          if (!${ev.isNull}) {
+            byte[] input = ${eval.value}.getBytes();
+            ${ev.value} = $regex.matcher(input).search(0, input.length, ${optionClass}.DEFAULT) > -1;
+          }
+        """)
+      }else{
+        ev.copy(code = code"""
+          boolean ${ev.isNull} = true;
+          ${CodeGenerator.javaType(dataType)} ${ev.value} = ${CodeGenerator.defaultValue(dataType)};
+        """)
+      }
+    }else{
+      val regex = ctx.freshName("regex")
+      nullSafeCodeGen(ctx, ev, (eval1, eval2) => {
+        s"""
+           byte[] pattern = ${eval2}.getBytes();
+           ${regexClass} $regex = new ${regexClass}(pattern, 0, pattern.length, ${optionClass}.NONE,
+           ${encodingClass}.INSTANCE);
+           byte[] input = ${eval1}.getBytes();
+           ${ev.value} = $regex.matcher(input).search(0, input.length, ${optionClass}.DEFAULT) > -1;
+         """
+      })
+    }
+
+  }
+
+
+}
+
+
 @ExpressionDescription(
   usage = "str _FUNC_ regexp - Returns true if `str` matches `regexp`, or false otherwise.",
   arguments = """
@@ -180,7 +328,7 @@ case class Like(left: Expression, right: Expression) extends StringRegexExpressi
   note = """
     Use LIKE to match with simple string pattern.
   """)
-case class RLike(left: Expression, right: Expression) extends StringRegexExpression {
+case class JRLike(left: Expression, right: Expression) extends StringRegexExpression {
 
   override def escape(v: String): String = v
   override def matches(regex: Pattern, str: String): Boolean = regex.matcher(str).find(0)

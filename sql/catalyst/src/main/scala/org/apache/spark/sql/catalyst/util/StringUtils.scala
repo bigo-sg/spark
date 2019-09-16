@@ -59,6 +59,30 @@ object StringUtils {
     "(?s)" + out.result() // (?s) enables dotall mode, causing "." to match new lines
   }
 
+  def escapeLikeRegex2(pattern: String): String = {
+    val in = pattern.toIterator
+    val out = new StringBuilder()
+
+    def fail(message: String) = throw new AnalysisException(
+      s"the pattern '$pattern' is invalid, $message")
+
+    while (in.hasNext) {
+      in.next match {
+        case '\\' if in.hasNext =>
+          val c = in.next
+          c match {
+            case '_' | '%' | '\\' => out ++= Pattern.quote(Character.toString(c))
+            case _ => fail(s"the escape character is not allowed to precede '$c'")
+          }
+        case '\\' => fail("it is not allowed to end with the escape character")
+        case '_' => out ++= "."
+        case '%' => out ++= ".*"
+        case c => out ++= Character.toString(c)
+      }
+    }
+    out.result() // no dotall mode
+  }
+
   private[this] val trueStrings = Set("t", "true", "y", "yes", "1").map(UTF8String.fromString)
   private[this] val falseStrings = Set("f", "false", "n", "no", "0").map(UTF8String.fromString)
 

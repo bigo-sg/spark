@@ -526,7 +526,12 @@ case class InsertIntoHiveTable(
           directRenamePathList.foreach {
             path =>
               val destPath = path.replace("ext-10000", "ext-10000-merge")
-              fs.rename(new Path(path), new Path(destPath))
+              val destParent = new Path(destPath).getParent
+              if(!fs.exists(destParent)){
+                fs.mkdirs(destParent)
+                logInfo("mkdir direct parent " + destParent)
+              }
+              if(!fs.rename(new Path(path), new Path(destPath))) throw new IOException(s"direct rename fail from $path to $destPath")
               rollbackPathList += destPath
               logInfo("direct rename [" + path + " to " + destPath + "]")
           }

@@ -117,14 +117,15 @@ case class Like(left: Expression, right: Expression) extends StringRegexExpressi
     if (right.foldable) {
       val rVal = right.eval()
       if (rVal != null) {
+        val pattern = ctx.freshName("pattern")
         val tmp = StringEscapeUtils.escapeJava(escape(rVal.asInstanceOf[UTF8String].toString()))
         val regex =ctx.addMutableState(regexClass, "regex",
           r=> s"""
-            byte[] pattern = UTF8String.fromString("${tmp}").getBytes();
-            $r = new ${regexClass}(pattern, 0, pattern.length, ${optionClass}.NONE,
+            byte[] $pattern = UTF8String.fromString("${tmp}").getBytes();
+            $r = new ${regexClass}($pattern, 0, $pattern.length, ${optionClass}.NONE,
               ${encodingClass}.INSTANCE);
           """.stripMargin)
-        val eval = left.genCode(ctx)
+        val eval = left.genCode(ctx):
         ev.copy(code = code"""
           ${eval.code}
           boolean ${ev.isNull} = ${eval.isNull};
@@ -257,11 +258,12 @@ case class RLike (left: Expression, right: Expression) extends StringRegexExpres
     if (right.foldable) {
       val rVal = right.eval()
       if (rVal != null) {
+        val pattern = ctx.freshName("pattern")
         val tmp = StringEscapeUtils.escapeJava(rVal.asInstanceOf[UTF8String].toString())
         val regex =ctx.addMutableState(regexClass, "regex",
           r=> s"""
-            byte[] pattern = UTF8String.fromString("${tmp}").getBytes();
-            $r = new ${regexClass}(pattern, 0, pattern.length, ${optionClass}.NONE,
+            byte[] $pattern = UTF8String.fromString("${tmp}").getBytes();
+            $r = new ${regexClass}($pattern, 0, $pattern.length, ${optionClass}.NONE,
               ${encodingClass}.INSTANCE);
           """.stripMargin)
 
@@ -283,10 +285,11 @@ case class RLike (left: Expression, right: Expression) extends StringRegexExpres
       }
     }else{
       val regex = ctx.freshName("regex")
+      val pattern = ctx.freshName("pattern")
       nullSafeCodeGen(ctx, ev, (eval1, eval2) => {
         s"""
-           byte[] pattern = ${eval2}.getBytes();
-           ${regexClass} $regex = new ${regexClass}(pattern, 0, pattern.length, ${optionClass}.NONE,
+           byte[] $pattern = ${eval2}.getBytes();
+           ${regexClass} $regex = new ${regexClass}($pattern, 0, $pattern.length, ${optionClass}.NONE,
            ${encodingClass}.INSTANCE);
            byte[] input = ${eval1}.getBytes();
            ${ev.value} = $regex.matcher(input).search(0, input.length, ${optionClass}.DEFAULT) > -1;

@@ -131,7 +131,7 @@ class SessionCatalog(
     if (conf.caseSensitiveAnalysis) name else name.toLowerCase(Locale.ROOT)
   }
 
-  private val tableRelationCache: Cache[QualifiedTableName, LogicalPlan] = {
+  private var tableRelationCache: Cache[QualifiedTableName, LogicalPlan] = {
     val cacheSize = conf.tableRelationCacheSize
     CacheBuilder.newBuilder().maximumSize(cacheSize).build[QualifiedTableName, LogicalPlan]()
   }
@@ -1398,6 +1398,11 @@ class SessionCatalog(
     target.currentDb = currentDb
     // copy over temporary views
     tempViews.foreach(kv => target.tempViews.put(kv._1, kv._2))
+  }
+
+  private[sql] def copyTableCacheTo(target:SessionCatalog):Unit = synchronized {
+    logInfo("share the same relation cache")
+    target.tableRelationCache = tableRelationCache
   }
 
   /**

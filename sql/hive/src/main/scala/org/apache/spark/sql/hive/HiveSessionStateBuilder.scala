@@ -60,6 +60,9 @@ class HiveSessionStateBuilder(session: SparkSession, parentState: Option[Session
       sqlParser,
       resourceLoader)
     parentState.foreach(_.catalog.copyStateTo(catalog))
+    if(session.conf.get("spark.sql.hivesession.share.tablecache","false")=="true") {
+      parentState.foreach(_.catalog.copyTableCacheTo(catalog))
+    }
     catalog
   }
 

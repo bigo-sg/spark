@@ -122,6 +122,7 @@ class InMemoryFileIndex(
       }
       Unit // for some reasons scalac 2.12 needs this; return type doesn't matter
     }
+    logInfo("paths to fetch " + pathsToFetch.size)
     val filter = FileInputFormat.getInputPathFilter(new JobConf(hadoopConf, this.getClass))
     val discovered = InMemoryFileIndex.bulkListLeafFiles(
       pathsToFetch, hadoopConf, filter, sparkSession)

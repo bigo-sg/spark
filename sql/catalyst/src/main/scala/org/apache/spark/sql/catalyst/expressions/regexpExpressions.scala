@@ -125,7 +125,7 @@ case class Like(left: Expression, right: Expression) extends StringRegexExpressi
             $r = new ${regexClass}($pattern, 0, $pattern.length, ${optionClass}.NONE,
               ${encodingClass}.INSTANCE);
           """.stripMargin)
-        val eval = left.genCode(ctx):
+        val eval = left.genCode(ctx)
         ev.copy(code = code"""
           ${eval.code}
           boolean ${ev.isNull} = ${eval.isNull};

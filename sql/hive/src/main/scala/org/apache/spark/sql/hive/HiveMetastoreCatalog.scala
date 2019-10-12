@@ -153,7 +153,12 @@ private[hive] class HiveMetastoreCatalog(sparkSession: SparkSession) extends Log
           fileFormatClass,
           Some(partitionSchema))
 
+        if(cached.nonEmpty) {
+          logInfo("found the cache relation " + tableIdentifier)
+        }
+
         val logicalRelation = cached.getOrElse {
+          logInfo("not found cache relation "+ tableIdentifier)
           val sizeInBytes = relation.stats.sizeInBytes.toLong
           val fileIndex = {
             val index = new CatalogFileIndex(sparkSession, relation.tableMeta, sizeInBytes)

@@ -233,20 +233,14 @@ case class InsertIntoHiveTable(
       return dir
     }
 
-    def getRePartitionNum(path: Path, conf: Configuration): Int = {
+    def getRePartitionNum(path: Path, conf: Configuration): (Int,Long) = {
       var rePartitionNum = -1
-      try {
-        val inpFs = path.getFileSystem(conf)
-        if (inpFs.exists(path)) {
-          val totSize = getPathSize(inpFs, path)
-          logInfo("static partition totalsize of path: " + path.toString + " is: "
-            + totSize.totalSize + "; numFiles is: " + totSize.numFiles)
-          rePartitionNum = computeMergePartitionNum(totSize)
-        }
-      } catch {
-        case e: IOException => log.error("get FileSystem failed!", e)
-      }
-      rePartitionNum
+      val inpFs = path.getFileSystem(conf)
+      val totSize = getPathSize(inpFs, path)
+      logInfo("static partition totalsize of path: " + path.toString + " is: "
+        + totSize.totalSize + "; numFiles is: " + totSize.numFiles)
+      rePartitionNum = computeMergePartitionNum(totSize)
+      (rePartitionNum, totSize.getAverageSize)
     }
 
     def computeMergePartitionNum(totsize: AverageSize): Int = {
@@ -489,10 +483,11 @@ case class InsertIntoHiveTable(
           logInfo("[mergeFile] merge dynamic partition finished")
         }
       } else {
-        val reParitionNum = getRePartitionNum(path, hadoopConf)
+        val (reParitionNum, avgsize) = getRePartitionNum(path, hadoopConf)
         logInfo(s"[mergeFile] static $path rePartionNum is: " + reParitionNum)
         if (reParitionNum > 0) {
-          if(fileSinkConf.tableInfo.getOutputFileFormatClassName.toLowerCase.endsWith("orcoutputformat") && orcmergeEnabled){
+          if(fileSinkConf.tableInfo.getOutputFileFormatClassName.toLowerCase.endsWith("orcoutputformat") && orcmergeEnabled
+          && avgsize > 2*1024*1024){
             logInfo("fast merge orc static part")
             OrcMergeUtil.mergeStaticPartOrc(path,reParitionNum,broadcastedHadoopConf,sparkSession)
           }else {

@@ -792,7 +792,9 @@ class SessionCatalog(
 
     // Also invalidate the table relation cache.
     val qualifiedTableName = QualifiedTableName(dbName, tableName)
-    tableRelationCache.invalidate(qualifiedTableName)
+    if(conf.getConfString("spark.sql.hivesession.share.tablecache","false")=="false") {
+      tableRelationCache.invalidate(qualifiedTableName)
+    }
   }
 
   /**

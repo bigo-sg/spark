@@ -148,8 +148,25 @@ case class InsertIntoHiveTable(
                              tmpLocation: Path,
                              child: SparkPlan): Unit = {
     var tmpLocation2: Path = tmpLocation
-    val broadcastedHadoopConf =
-      sparkSession.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
+    val catalogTable = table
+
+    implicit class SchemaAttribute(f: StructField) {
+      def toAttribute: AttributeReference = AttributeReference(
+        f.name,
+        f.dataType,
+        // Since data can be dumped in randomly with no validation, everything is nullable.
+        nullable = true
+      )(qualifier = List(catalogTable.identifier.table))
+    }
+
+    val dattributes = catalogTable.schema.filter { c => !catalogTable.partitionColumnNames.contains(c.name) }
+      .map(_.toAttribute)
+    val datacs = dattributes.map(c => c.name).mkString(",")
+    logInfo("catalog table data column: " + datacs)
+    val part_attributes = catalogTable.partitionSchema.map(_.toAttribute)
+    val partcs = part_attributes.map(c => c.name).mkString(",")
+    logInfo(msg = "catalog table partition: " + partcs)
+    logInfo("output columns: " + outputColumnNames.mkString(","))
 
     def getPathSize(inpFs: FileSystem, dirPath: Path): AverageSize = {
       val error = new AverageSize(-1, -1)
@@ -290,101 +307,6 @@ case class InsertIntoHiveTable(
       }
     }
 
-
-    def createHadoopRdd(tableDesc: TableDesc,
-                        path: String,
-                        inputFormatClass: Class[InputFormat[Writable, Writable]], minSplits: Int): RDD[Writable] = {
-
-      val initializeJobConfFunc = HadoopTableReader.initializeLocalJobConfFunc(path, tableDesc) _
-
-      val rdd = new HadoopRDD(
-        sparkSession.sparkContext,
-        broadcastedHadoopConf.asInstanceOf[Broadcast[SerializableConfiguration]],
-        Some(initializeJobConfFunc),
-        inputFormatClass,
-        classOf[Writable],
-        classOf[Writable],
-        minSplits)
-
-      // Only take the value (skip the key) because Hive works only with values.
-      rdd.map(_._2)
-    }
-
-    val catalogTable = table
-    implicit class SchemaAttribute(f: StructField) {
-      def toAttribute: AttributeReference = AttributeReference(
-        f.name,
-        f.dataType,
-        // Since data can be dumped in randomly with no validation, everything is nullable.
-        nullable = true
-      )(qualifier = List(catalogTable.identifier.table))
-    }
-
-    val dattributes = catalogTable.schema.filter { c => !catalogTable.partitionColumnNames.contains(c.name) }
-      .map(_.toAttribute)
-    val datacs = dattributes.map(c => c.name).mkString(",")
-    logInfo("catalog table data column: " + datacs)
-    val part_attributes = catalogTable.partitionSchema.map(_.toAttribute)
-    val partcs = part_attributes.map(c => c.name).mkString(",")
-    logInfo(msg = "catalog table partition: " + partcs)
-    logInfo("output columns: " + outputColumnNames.mkString(","))
-
-    def makeMergedRddForPartition(inputPathStr: Path, dynamicPartKey: Seq[Attribute], ifc: Class[InputFormat[Writable, Writable]]): RDD[InternalRow] = {
-      val mutableRow = new SpecificInternalRow(outputColumns.map(_.dataType))
-      val (partitionKeyAttrs, nonPartitionKeyAttrs) = outputColumns.zipWithIndex.partition {
-        case (attr, _) => dynamicPartKey.contains(attr)
-      }
-      val part2val = getPartValue(inputPathStr.toString, dynamicPartKey.map(_.name))
-
-      partitionKeyAttrs.foreach { case (attr, ordinal) =>
-        mutableRow(ordinal) = Cast(Literal(part2val(attr.name)), attr.dataType).eval(null)
-      }
-
-      val tprop = tableDesc.getProperties
-      val deSerRdd = createHadoopRdd(tableDesc, inputPathStr.toString, ifc, minSplitsPerRDD(hadoopConf, sparkSession)).mapPartitions {
-        iter =>
-          val hconf = broadcastedHadoopConf.value.value
-          val deserializer = tableDesc.getDeserializer(hconf)
-          val props = new Properties(tprop)
-          deserializer.initialize(hconf, props)
-
-          val tableSerDe = tableDesc.getDeserializerClass.newInstance()
-          tableSerDe.initialize(hconf, tableDesc.getProperties)
-          HadoopTableReader.fillObject(iter, deserializer, nonPartitionKeyAttrs,
-            mutableRow, tableSerDe)
-      }
-      deSerRdd
-    }
-
-    def makeMergedRDDForPartitionedTable(rule: DynamicPartMergeRule, dynamicPartKey: Seq[Attribute]): RDD[InternalRow] = {
-      val ifc = tableDesc.getInputFileFormatClass.asInstanceOf[java.lang.Class[InputFormat[Writable, Writable]]]
-      val rdds = rule.plist.map { case (path, repartnum) =>
-        logInfo(s"[makeMergedRDDForPartitionedTable] create rdd for $path repartition $repartnum")
-        makeMergedRddForPartition(new Path(path), dynamicPartKey, ifc).map(row => row.copy()).coalesce(repartnum)
-      }.toList
-      unionRdds(rdds)
-    }
-
-    def makeMergedRDDForTable(path: Path, rePartitionNum: Int): RDD[InternalRow] = {
-      val ifc = tableDesc.getInputFileFormatClass.asInstanceOf[java.lang.Class[InputFormat[Writable, Writable]]]
-      val hadoopRDD = createHadoopRdd(tableDesc, path.toString, ifc, minSplitsPerRDD(hadoopConf, sparkSession))
-      val attributes = catalogTable.schema.filter { c => !catalogTable.partitionColumnNames.contains(c.name) }
-        .map(_.toAttribute)
-      val attrsWithIndex = attributes.zipWithIndex
-      val mutableRow = new SpecificInternalRow(attributes.map(_.dataType))
-      val deserializerClass = Utils.classForName(tableDesc.getSerdeClassName).asInstanceOf[Class[Deserializer]]
-
-      val deserializedHadoopRDD = hadoopRDD.mapPartitions { iter =>
-        val hconf = broadcastedHadoopConf.value.value
-        val deserializer = deserializerClass.newInstance()
-        deserializer.initialize(hconf, tableDesc.getProperties)
-        HadoopTableReader.fillObject(iter, deserializer, attrsWithIndex, mutableRow, deserializer)
-      }
-
-      deserializedHadoopRDD.map(row => row.copy()).coalesce(rePartitionNum)
-    }
-
-
     val fileSinkConf = new FileSinkDesc(tmpLocation.toString, tableDesc, false)
 
     val numDynamicPartitions = partition.values.count(_.isEmpty)
@@ -462,6 +384,88 @@ case class InsertIntoHiveTable(
       fileSinkConf = fileSinkConf,
       outputLocation = tmpLocation.toString,
       partitionAttributes = partitionAttributes)
+
+    if(tableDesc.getOutputFileFormatClassName.toLowerCase.contains("parquet")){
+      logInfo("output parquet format, set hive.io.file.readcolumn.ids")
+      val columnIndexSeq = Range(0,catalogTable.dataSchema.size).mkString(",")
+      hadoopConf.set("hive.io.file.readcolumn.ids",columnIndexSeq)
+    }
+    val broadcastedHadoopConf =
+      sparkSession.sparkContext.broadcast(new SerializableConfiguration(hadoopConf))
+
+    def createHadoopRdd(tableDesc: TableDesc,
+                        path: String,
+                        inputFormatClass: Class[InputFormat[Writable, Writable]], minSplits: Int): RDD[Writable] = {
+
+      val initializeJobConfFunc = HadoopTableReader.initializeLocalJobConfFunc(path, tableDesc) _
+
+      val rdd = new HadoopRDD(
+        sparkSession.sparkContext,
+        broadcastedHadoopConf.asInstanceOf[Broadcast[SerializableConfiguration]],
+        Some(initializeJobConfFunc),
+        inputFormatClass,
+        classOf[Writable],
+        classOf[Writable],
+        minSplits)
+
+      // Only take the value (skip the key) because Hive works only with values.
+      rdd.map(_._2)
+    }
+
+    def makeMergedRddForPartition(inputPathStr: Path, dynamicPartKey: Seq[Attribute], ifc: Class[InputFormat[Writable, Writable]]): RDD[InternalRow] = {
+      val mutableRow = new SpecificInternalRow(outputColumns.map(_.dataType))
+      val (partitionKeyAttrs, nonPartitionKeyAttrs) = outputColumns.zipWithIndex.partition {
+        case (attr, _) => dynamicPartKey.contains(attr)
+      }
+      val part2val = getPartValue(inputPathStr.toString, dynamicPartKey.map(_.name))
+
+      partitionKeyAttrs.foreach { case (attr, ordinal) =>
+        mutableRow(ordinal) = Cast(Literal(part2val(attr.name)), attr.dataType).eval(null)
+      }
+
+      val tprop = tableDesc.getProperties
+      val deSerRdd = createHadoopRdd(tableDesc, inputPathStr.toString, ifc, minSplitsPerRDD(hadoopConf, sparkSession)).mapPartitions {
+        iter =>
+          val hconf = broadcastedHadoopConf.value.value
+          val deserializer = tableDesc.getDeserializer(hconf)
+          val props = new Properties(tprop)
+          deserializer.initialize(hconf, props)
+
+          val tableSerDe = tableDesc.getDeserializerClass.newInstance()
+          tableSerDe.initialize(hconf, tableDesc.getProperties)
+          HadoopTableReader.fillObject(iter, deserializer, nonPartitionKeyAttrs,
+            mutableRow, tableSerDe)
+      }
+      deSerRdd
+    }
+
+    def makeMergedRDDForPartitionedTable(rule: DynamicPartMergeRule, dynamicPartKey: Seq[Attribute]): RDD[InternalRow] = {
+      val ifc = tableDesc.getInputFileFormatClass.asInstanceOf[java.lang.Class[InputFormat[Writable, Writable]]]
+      val rdds = rule.plist.map { case (path, repartnum) =>
+        logInfo(s"[makeMergedRDDForPartitionedTable] create rdd for $path repartition $repartnum")
+        makeMergedRddForPartition(new Path(path), dynamicPartKey, ifc).map(row => row.copy()).coalesce(repartnum)
+      }.toList
+      unionRdds(rdds)
+    }
+
+    def makeMergedRDDForTable(path: Path, rePartitionNum: Int): RDD[InternalRow] = {
+      val ifc = tableDesc.getInputFileFormatClass.asInstanceOf[java.lang.Class[InputFormat[Writable, Writable]]]
+      val hadoopRDD = createHadoopRdd(tableDesc, path.toString, ifc, minSplitsPerRDD(hadoopConf, sparkSession))
+      val attributes = catalogTable.schema.filter { c => !catalogTable.partitionColumnNames.contains(c.name) }
+        .map(_.toAttribute)
+      val attrsWithIndex = attributes.zipWithIndex
+      val mutableRow = new SpecificInternalRow(attributes.map(_.dataType))
+      val deserializerClass = Utils.classForName(tableDesc.getSerdeClassName).asInstanceOf[Class[Deserializer]]
+
+      val deserializedHadoopRDD = hadoopRDD.mapPartitions { iter =>
+        val hconf = broadcastedHadoopConf.value.value
+        val deserializer = deserializerClass.newInstance()
+        deserializer.initialize(hconf, tableDesc.getProperties)
+        HadoopTableReader.fillObject(iter, deserializer, attrsWithIndex, mutableRow, deserializer)
+      }
+
+      deserializedHadoopRDD.map(row => row.copy()).coalesce(rePartitionNum)
+    }
 
     def mergeFiles(path: Path, fileSinkConf: FileSinkDesc, directRenamePathList: ListBuffer[String]): Unit = {
       logInfo("[mergeFile] dirname in fileSinkConf is: " + fileSinkConf.dir)

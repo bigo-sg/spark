@@ -23,6 +23,7 @@ import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.codahale.metrics.Gauge;
 import com.codahale.metrics.Meter;
@@ -30,6 +31,7 @@ import com.codahale.metrics.Metric;
 import com.codahale.metrics.MetricSet;
 import com.codahale.metrics.Timer;
 import com.google.common.annotations.VisibleForTesting;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,6 +45,7 @@ import org.apache.spark.network.shuffle.ExternalShuffleBlockResolver.AppExecId;
 import org.apache.spark.network.shuffle.protocol.*;
 import static org.apache.spark.network.util.NettyUtils.getRemoteAddress;
 import org.apache.spark.network.util.TransportConf;
+import org.apache.spark.network.server.OneForOneStreamManager.StreamState;
 
 /**
  * RPC Handler for a server which can serve shuffle blocks from outside of an Executor process.
@@ -135,6 +138,20 @@ public class ExternalShuffleBlockHandler extends RpcHandler {
    * local directories associated with the executors of that application in a separate thread.
    */
   public void applicationRemoved(String appId, boolean cleanupLocalDirs) {
+    // before remove executor, we should clean all the appId's steamState
+    ConcurrentHashMap<Long, StreamState> streams = streamManager.getStreams();
+    for (Map.Entry<Long, StreamState> entry: streams.entrySet()) {
+      StreamState state = entry.getValue();
+      if (StringUtils.isNoneEmpty(state.getAppId()) && state.getAppId().equals(appId)) {
+        logger.warn("found streamState memory leak...");
+        streams.remove(entry.getKey());
+        // Release all remaining buffers.
+        Iterator<ManagedBuffer> buffers = state.getBuffers();
+        while (buffers.hasNext()) {
+          buffers.next().release();
+        }
+      }
+    }
     blockManager.applicationRemoved(appId, cleanupLocalDirs);
   }
 
